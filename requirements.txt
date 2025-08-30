@@ -1,12 +1,25 @@
-fastapi
-uvicorn
-motor
-pymongo
-pandas
-numpy
-lightfm
-xgboost
-scikit-learn
-python-dateutil
+# --- Web & infra ---
+fastapi==0.116.1
+uvicorn==0.35.0
+motor==3.7.1
+pymongo==4.14.1
 python-dotenv
 apscheduler
+python-dateutil
+
+# --- Data stack pins (ensure LightFM builds) ---
+# LightFM needs C/C++ build and does NOT like NumPy 2.x or Cython 3.x
+Cython<3
+setuptools<75
+wheel
+numpy==1.26.4
+scipy==1.11.4
+pandas==2.3.2
+matplotlib
+
+# --- ML libs ---
+scikit-learn
+xgboost
+
+# --- Recommenders ---
+lightfm==1.17
