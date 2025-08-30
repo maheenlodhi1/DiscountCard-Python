@@ -1,40 +1,59 @@
-# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
-# More GitHub Actions for Azure: https://github.com/Azure/actions
-# More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
-
 name: Build and deploy Python app to Azure Web App - discountcard-python
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read #This is required for actions/checkout
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python version
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: "3.9"
 
-      - name: Create and start virtual environment
+      - name: Create venv & upgrade pip
+        shell: bash
         run: |
           python -m venv venv
-          source venv/bin/activate
-      
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-        
-      # Optional: Add step to run tests here (PyTest, Django test suites, etc.)
+          . venv/bin/activate
+          python -m pip install --upgrade pip
 
-      - name: Upload artifact for deployment jobs
+      # Build LightFM & deps locally and vendor into .python_packages
+      - name: Vendor site-packages to .python_packages
+        shell: bash
+        env:
+          LIGHTFM_NO_OPENMP: "1"
+        run: |
+          . venv/bin/activate
+          # Build helpers + ABI-compatible pins
+          pip install "Cython<3" "setuptools<75" wheel
+          pip install "numpy==1.26.4" "scipy==1.11.4"
+          # Target folder Azure automatically adds to sys.path
+          mkdir -p .python_packages/lib/site-packages
+          # Install LightFM without build isolation (uses preinstalled numpy/scipy)
+          pip install --no-build-isolation --no-deps \
+            --target .python_packages/lib/site-packages "lightfm==1.17"
+          # Install the rest (don’t let pip upgrade numpy/scipy)
+          pip install --no-deps --target .python_packages/lib/site-packages -r requirements.txt
+          # Guardrail: ensure correct numpy/scipy are present
+          pip install --target .python_packages/lib/site-packages "numpy==1.26.4" "scipy==1.11.4"
+          # Sanity check
+          python - <<'PY'
+import sys, os
+p=os.path.abspath(".python_packages/lib/site-packages"); sys.path.insert(0,p)
+import numpy, scipy, lightfm
+print("Vendored OK:", numpy.__version__, scipy.__version__, lightfm.__version__)
+PY
+
+      - name: Upload artifact for deployment
         uses: actions/upload-artifact@v4
         with:
           name: python-app
@@ -46,15 +65,15 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     permissions:
-      id-token: write #This is required for requesting the JWT
-      contents: read #This is required for actions/checkout
+      id-token: write
+      contents: read
 
     steps:
-      - name: Download artifact from build job
+      - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: python-app
-      
+
       - name: Login to Azure
         uses: azure/login@v2
         with:
@@ -62,10 +81,9 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_3BDB9F105E3E4A62932ABD4F09579106 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_29F66A7B521C463396C4FDEA53497B9B }}
 
-      - name: 'Deploy to Azure Web App'
+      - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
-        id: deploy-to-webapp
         with:
-          app-name: 'discountcard-python'
-          slot-name: 'Production'
-          
+          app-name: "discountcard-python"
+          slot-name: "Production"
+          package: .
