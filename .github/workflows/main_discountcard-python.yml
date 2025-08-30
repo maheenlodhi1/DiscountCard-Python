@@ -17,46 +17,31 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: "3.9"
 
       - name: Create venv and upgrade pip
+        shell: bash
         run: |
           python -m venv venv
           . venv/bin/activate
           python -m pip install --upgrade pip
 
-      # ---- Build LightFM & deps locally and vendor into .python_packages ----
-      - name: Build wheels and vendor site-packages
+      # Build LightFM & deps locally and vendor into .python_packages
+      - name: Vendor site-packages to .python_packages
+        shell: bash
         env:
           LIGHTFM_NO_OPENMP: "1"
         run: |
           . venv/bin/activate
-          # Build env deps needed to compile LightFM
           pip install "Cython<3" "setuptools<75" wheel
           pip install "numpy==1.26.4" "scipy==1.11.4"
-
-          # Create target folder that Azure honors at runtime
           mkdir -p .python_packages/lib/site-packages
-
-          # 1) Install LightFM using the preinstalled numpy/scipy (no build isolation)
           pip install --no-build-isolation --no-deps --target .python_packages/lib/site-packages "lightfm==1.17"
-
-          # 2) Install the rest of your requirements WITHOUT pulling new numpy/scipy
           pip install --no-deps --target .python_packages/lib/site-packages -r requirements.txt
-
-          # 3) Ensure numpy/scipy are also present in the target (runtime imports)
           pip install --target .python_packages/lib/site-packages "numpy==1.26.4" "scipy==1.11.4"
+          python -c "import sys,os; p=os.path.abspath('.python_packages/lib/site-packages'); sys.path.insert(0,p); import lightfm,numpy,scipy; print('Vendored OK', numpy.__version__, scipy.__version__, lightfm.__version__)"
 
-          # Optional sanity check
-          python - <<'PY'
-import sys, importlib.util, os
-site = os.path.abspath(".python_packages/lib/site-packages")
-sys.path.insert(0, site)
-import lightfm, numpy, scipy
-print("Vendored OK:", numpy.__version__, scipy.__version__, lightfm.__version__)
-PY
-
-      - name: Upload artifact for deployment jobs
+      - name: Upload artifact for deployment
         uses: actions/upload-artifact@v4
         with:
           name: python-app
@@ -72,7 +57,7 @@ PY
       contents: read
 
     steps:
-      - name: Download artifact from build job
+      - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: python-app
@@ -87,6 +72,6 @@ PY
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
-          app-name: 'discountcard-python'
-          slot-name: 'Production'
+          app-name: "discountcard-python"
+          slot-name: "Production"
           package: .
