@@ -1,41 +1,63 @@
+# app.py
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from enum import Enum
-from typing import Optional, Any, Dict, List, Literal
-from datetime import datetime, timedelta, date
-import numpy as np, os, pickle, asyncio, json
+from typing import Optional, Any, Dict, List
+from datetime import datetime, timedelta, date, timezone
+import asyncio
+import json
+import logging
+import numpy as np
+import os
+import pickle
+import subprocess
+import sys
 from bson import ObjectId
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from datetime import datetime, timedelta, date, timezone
-import sys, subprocess, logging
-
-logger = logging.getLogger("retrain")
-logger.setLevel(logging.INFO)
 
 from db import get_db
 from mongo_utils import get_promotions_by_ids, to_object_ids
 
+# -------------------- env --------------------
 load_dotenv()
 
-# -------- env --------
-MONGO_DB        = os.getenv("MONGO_DB", "discount_card")
-EVENTS_COL      = os.getenv("EVENTS_COLLECTION", "promotionevents")
+MONGO_DB   = os.getenv("MONGO_DB", "discount_card")
+EVENTS_COL = os.getenv("EVENTS_COLLECTION", "promotionevents")
 
-# Try common recommender artifact names; first that exists wins
-_RECO_CANDIDATES = [
-    os.getenv("RECO_MODEL_PATH", "models/lightfm_model.pkl"),
-    "models/lightfm_model.pkl",
-    "models/model.pkl",
-]
-TREND_GLOBAL    = os.getenv("TRENDING_TOPK_PATH", "models/trending_topk.json")
-TREND_PER_CAT   = os.getenv("TRENDING_PER_CAT_PATH", "models/trending_topk_per_category.json")
+# Writable/persistent path on Azure App Service
+BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR   = os.getenv("APP_DATA_DIR", "/home/site/data")
+MODELS_DIR = os.path.join(DATA_DIR, "models")
+os.makedirs(MODELS_DIR, exist_ok=True)
+
+# Prefer env overrides but default to writable location
+RECO_MODEL_PATH = os.getenv("RECO_MODEL_PATH", os.path.join(MODELS_DIR, "lightfm_model.pkl"))
+TREND_GLOBAL    = os.getenv("TRENDING_TOPK_PATH", os.path.join(MODELS_DIR, "trending_topk.json"))
+TREND_PER_CAT   = os.getenv("TRENDING_PER_CAT_PATH", os.path.join(MODELS_DIR, "trending_topk_per_category.json"))
 TRENDING_DAYS   = int(os.getenv("TRENDING_DAYS", "30"))
 
+# Try common recommender artifact names; first that exists wins (writable first)
+_RECO_CANDIDATES = [
+    RECO_MODEL_PATH,                          # /home/site/data/models/lightfm_model.pkl (default)
+    os.path.join(MODELS_DIR, "model.pkl"),
+    os.path.join(BASE_DIR, "models", "lightfm_model.pkl"),
+    os.path.join(BASE_DIR, "models", "model.pkl"),
+]
+
+# -------------------- logging (goes to stdout so Log Stream shows it) --------------------
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger("retrain")
+
+# -------------------- app --------------------
 app = FastAPI(title="DiscountCard AI APIs")
 
-# -------- runtime state --------
+# runtime state
 _reco_lock = asyncio.Lock()
 _reco = {"loaded": False, "model": None, "users": [], "items": [], "mtime": None, "path": None}
 _trend = {"loaded": False, "global_ids": [], "per_cat": {}}
@@ -95,12 +117,9 @@ def _try_load_trending():
                     break
 
     data_pc = _load_json(TREND_PER_CAT)
-    # train_trending.py saves a *flat list* of records; we take Top-M per category already computed.
-    # If you instead store a mapping {categoryName: [ids...]}, this handles that too.
     if isinstance(data_pc, dict):
         per_cat = {k: _normalize_ids(v) for k, v in data_pc.items() if isinstance(v, (list, tuple))}
     elif isinstance(data_pc, list):
-        # Accept list of {promotionId, categoryName, prob_trending}
         per_cat_tmp: Dict[str, List[str]] = {}
         for row in data_pc:
             if not isinstance(row, dict):
@@ -144,10 +163,11 @@ class LogEvent(BaseModel):
             return v
         return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
 
-# ---------- model loaders ----------
+# ---------- model loader ----------
 async def _try_load_recommender():
     path = _find_existing_reco_path()
     if not path:
+        logger.info("[Loader] No recommender artifact found in candidates.")
         return
     mtime = os.path.getmtime(path)
     if _reco["loaded"] and _reco["mtime"] == mtime and _reco["path"] == path:
@@ -155,6 +175,7 @@ async def _try_load_recommender():
     async with _reco_lock:
         if _reco["loaded"] and _reco["mtime"] == mtime and _reco["path"] == path:
             return
+        logger.info("[Loader] Loading recommender from %s", path)
         with open(path, "rb") as f:
             data = pickle.load(f)
         model = data.get("model", None)
@@ -168,27 +189,46 @@ async def _try_load_recommender():
             "mtime": mtime,
             "path": path,
         })
+        logger.info("[Loader] Loaded model: users=%d items=%d", len(_reco["users"]), len(_reco["items"]))
 
-# -------------------- MINIMAL RETRAIN JOB ADDITION --------------------
+# ---------- subprocess helper ----------
+def _run_cmd(args, cwd):
+    logger.info("Running: %s (cwd=%s)", " ".join(args), cwd)
+    res = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+    if res.stdout:
+        logger.info("stdout:\n%s", res.stdout)
+    if res.stderr:
+        logger.info("stderr:\n%s", res.stderr)
+    res.check_returncode()
+
+# -------------------- retrain job --------------------
 async def _retrain_now():
-    """Run your two training scripts."""
+    """Run your two training scripts in background, with absolute paths."""
     py = sys.executable
-    def _run():
+    try:
         logger.info("[Retrain] Recommender (mongo)…")
-        subprocess.run([py, "train_recommend.py", "--mongo"], check=True)
-        logger.info("[Retrain] Trending (mongo)…")
-        subprocess.run([py, "train_trending.py", "--mongo"], check=True)
-        logger.info("[Retrain] Completed.")
-    await asyncio.to_thread(_run)
-# ---------------------------------------------------------------------
+        _run_cmd([py, os.path.join(BASE_DIR, "train_recommend.py"), "--mongo"], cwd=BASE_DIR)
 
+        logger.info("[Retrain] Trending (mongo)…")
+        _run_cmd([py, os.path.join(BASE_DIR, "train_trending.py"), "--mongo"], cwd=BASE_DIR)
+
+        logger.info("[Retrain] Completed. Reloading artifacts…")
+        await _try_load_recommender()
+        _try_load_trending()
+        logger.info("[Retrain] Artifacts reloaded.")
+    except subprocess.CalledProcessError as e:
+        logger.exception("[Retrain] FAILED with exit code %s", e.returncode)
+    except Exception:
+        logger.exception("[Retrain] FAILED unexpectedly")
+
+# -------------------- startup --------------------
 @app.on_event("startup")
 async def on_startup():
+    # Load any existing artifacts (won't block long)
     await _try_load_recommender()
     _try_load_trending()
 
-    # -------------------- MINIMAL SCHEDULER SETUP --------------------
-    # Run once immediately, then every 12 hours thereafter.
+    # Schedule future runs (timezone-aware next_run_time)
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(
         _retrain_now,
@@ -197,17 +237,23 @@ async def on_startup():
         id="retrain_job",
         coalesce=True,
         max_instances=1,
-        next_run_time=datetime.utcnow(),  # immediate first run
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=5),  # first run ~5s after startup
     )
     scheduler.start()
     app.state.scheduler = scheduler
-    # ----------------------------------------------------------------
 
-# ---------- endpoints ----------
+    # Fire an immediate, non-blocking run so Azure health checks don't time out
+    asyncio.create_task(_retrain_now())
+
+# -------------------- endpoints --------------------
 @app.get("/health")
 async def health():
+    job = getattr(getattr(app.state, "scheduler", None), "get_job", lambda *_: None)("retrain_job") \
+          if hasattr(getattr(app.state, "scheduler", None), "get_job") else None
+    nxt = job.next_run_time.isoformat() if job and job.next_run_time else None
     return {
         "ok": True,
+        "retrain_next": nxt,
         "recommender_loaded": _reco["loaded"],
         "users_count": len(_reco["users"] or []),
         "items_count": len(_reco["items"] or []),
@@ -236,7 +282,7 @@ async def log_event(ev: LogEvent):
 async def trending_deals(
     top_n: int = Query(10, ge=1, le=100),
     categoryName: Optional[str] = None,
-    days: Optional[int] = Query(None, ge=1, le=365),  # kept for fallback only
+    days: Optional[int] = Query(None, ge=1, le=365),
 ):
     """Serve model-based trending if present; otherwise fallback to last-N-day redeems in Mongo."""
     # 1) Model artifacts
@@ -272,7 +318,6 @@ async def trending_deals(
     pm = {str(p["_id"]): p for p in promos}
     ordered = [pm.get(str(pid)) for pid in top_ids_obj if str(pid) in pm]
     return {"trending_deals": [clean_json(p) for p in ordered if p]}
-
 
 @app.get("/recommended_deals/{user_id}")
 async def recommended_deals(
@@ -315,19 +360,14 @@ async def recommended_deals(
     pm = {str(p["_id"]): p for p in promos}
     ordered = [pm.get(pid) for pid in top_ids_str if pid in pm]
 
-    # If nothing matched back from DB, return null
     if not any(ordered):
         return {"recommended_deals": None, "note": "db_lookup_empty"}
 
     return {"recommended_deals": [clean_json(p) for p in ordered if p]}
 
-
 @app.post("/admin/retrain")
 async def manual_retrain():
-    """
-    Manually trigger the retraining job.
-    Returns immediately after queuing the task.
-    """
+    """Manually trigger the retraining job."""
     asyncio.create_task(_retrain_now())
     return {"status": "queued", "message": "Retraining started in background"}
 
@@ -336,9 +376,7 @@ async def get_events(
     limit: int = Query(50, ge=1, le=500),
     skip: int = Query(0, ge=0)
 ):
-    """
-    Get all events from MongoDB with pagination.
-    """
+    """Get all events from MongoDB with pagination."""
     db = get_db()
     cursor = db[EVENTS_COL].find().skip(skip).limit(limit)
     docs = await cursor.to_list(length=limit)
@@ -350,7 +388,6 @@ async def get_events(
         "limit": limit,
         "items": [clean_json(d) for d in docs],
     }
-
 
 @app.exception_handler(Exception)
 async def default_handler(_, __):
