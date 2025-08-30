@@ -1,0 +1,30 @@
+{
+  "features": [
+    "view",
+    "click",
+    "redeem",
+    "click_per_view",
+    "redeem_per_click",
+    "redeem_per_view",
+    "log_view",
+    "log_click",
+    "log_redeem",
+    "total_count",
+    "pop_percentile",
+    "unique_users",
+    "category",
+    "age_days",
+    "recency_hours",
+    "view_per_day",
+    "click_per_day",
+    "redeem_per_day",
+    "d_view",
+    "d_click",
+    "d_redeem"
+  ],
+  "category_mapping": {},
+  "cutoff_utc": "2025-08-30T01:27:16.698883+00:00",
+  "window_days": 30,
+  "decay_half_life_days": 7.0,
+  "n_promotions": 669
+}

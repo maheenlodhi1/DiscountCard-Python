@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+motor
+pymongo
+pandas
+numpy
+lightfm
+xgboost
+scikit-learn
+python-dateutil
+python-dotenv
+apscheduler

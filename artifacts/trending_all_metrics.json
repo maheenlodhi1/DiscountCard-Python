@@ -1,0 +1,15 @@
+{
+  "threshold": 0.9011476635932922,
+  "accuracy": 1.0,
+  "precision": 1.0,
+  "recall": 1.0,
+  "f1": 1.0,
+  "roc_auc": 1.0,
+  "pr_auc": 1.0,
+  "tn": 561,
+  "fp": 0,
+  "fn": 0,
+  "tp": 108,
+  "class_prevalence": 0.16143497757847533,
+  "n_samples": 669
+}
