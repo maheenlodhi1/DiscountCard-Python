@@ -1,16 +1,14 @@
 numpy==1.26.4
 scipy==1.11.4
-pandas==2.0.3           # py3.9-friendly
-scikit-learn==1.4.2     # solid on py3.9 + np1.26
-xgboost==1.7.6          # smaller; CPU wheel; stable
-lightfm==1.17           # prebuilt wheel exists for py3.9 manylinux
-
-# --- the rest of your deps below (unchanged) ---
+pandas==2.0.3
+scikit-learn==1.4.2
+lightfm==1.17
+xgboost==1.7.6
+python-dotenv
 fastapi==0.116.1
 uvicorn==0.35.0
 motor==3.7.1
 pymongo==4.14.1
-python-dotenv
 apscheduler
 python-dateutil
-matplotlib==3.9.4       # ok with py3.9; works with np1.26
+matplotlib==3.9.4
