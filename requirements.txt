@@ -1,3 +1,12 @@
+# --- hard pins first to control resolver and keep wheels small ---
+numpy==1.26.4
+scipy==1.11.4
+pandas==2.0.3           # py3.9-friendly
+scikit-learn==1.4.2     # solid on py3.9 + np1.26
+xgboost==1.7.6          # smaller; CPU wheel; stable
+lightfm==1.17           # prebuilt wheel exists for py3.9 manylinux
+
+# --- the rest of your deps below (unchanged) ---
 fastapi==0.116.1
 uvicorn==0.35.0
 motor==3.7.1
@@ -5,8 +14,4 @@ pymongo==4.14.1
 python-dotenv
 apscheduler
 python-dateutil
-pandas==2.0.3   # last pandas that works well with py3.9
-matplotlib
-scikit-learn
-xgboost
-lightfm==1.17
+matplotlib==3.9.4       # ok with py3.9; works with np1.26
