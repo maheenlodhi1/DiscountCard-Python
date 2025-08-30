@@ -1,4 +1,3 @@
-# --- hard pins first to control resolver and keep wheels small ---
 numpy==1.26.4
 scipy==1.11.4
 pandas==2.0.3           # py3.9-friendly
