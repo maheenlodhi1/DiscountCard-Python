@@ -2,7 +2,7 @@ name: Build and deploy Python app to Azure Web App - discountcard-python
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -26,32 +26,19 @@ jobs:
           . venv/bin/activate
           python -m pip install --upgrade pip
 
-      # Build LightFM & deps locally and vendor into .python_packages
       - name: Vendor site-packages to .python_packages
         shell: bash
         env:
           LIGHTFM_NO_OPENMP: "1"
         run: |
           . venv/bin/activate
-          # Build helpers + ABI-compatible pins
           pip install "Cython<3" "setuptools<75" wheel
           pip install "numpy==1.26.4" "scipy==1.11.4"
-          # Target folder Azure automatically adds to sys.path
           mkdir -p .python_packages/lib/site-packages
-          # Install LightFM without build isolation (uses preinstalled numpy/scipy)
-          pip install --no-build-isolation --no-deps \
-            --target .python_packages/lib/site-packages "lightfm==1.17"
-          # Install the rest (don’t let pip upgrade numpy/scipy)
+          pip install --no-build-isolation --no-deps --target .python_packages/lib/site-packages "lightfm==1.17"
           pip install --no-deps --target .python_packages/lib/site-packages -r requirements.txt
-          # Guardrail: ensure correct numpy/scipy are present
           pip install --target .python_packages/lib/site-packages "numpy==1.26.4" "scipy==1.11.4"
-          # Sanity check
-          python - <<'PY'
-import sys, os
-p=os.path.abspath(".python_packages/lib/site-packages"); sys.path.insert(0,p)
-import numpy, scipy, lightfm
-print("Vendored OK:", numpy.__version__, scipy.__version__, lightfm.__version__)
-PY
+          python -c "import sys,os; p=os.path.abspath('.python_packages/lib/site-packages'); sys.path.insert(0,p); import numpy,scipy,lightfm; print('Vendored OK:', numpy.__version__, scipy.__version__, lightfm.__version__)"
 
       - name: Upload artifact for deployment
         uses: actions/upload-artifact@v4
@@ -84,6 +71,6 @@ PY
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
-          app-name: "discountcard-python"
-          slot-name: "Production"
+          app-name: discountcard-python
+          slot-name: Production
           package: .
